@@ -7,8 +7,11 @@ from app.services.embedding import embed_text, embed_image_url, fused_product_em
 
 @lru_cache(maxsize=1)
 def client():
-    s=get_settings(); return QdrantClient(url=s.qdrant_url)
-
+    s = get_settings()
+    return QdrantClient(
+        url=s.qdrant_url,
+        api_key=s.qdrant_api_key,
+    )
 def ensure_collection():
     s=get_settings(); c=client()
     existing=[x.name for x in c.get_collections().collections]
