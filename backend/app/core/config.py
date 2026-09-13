@@ -1,4 +1,5 @@
 from functools import lru_cache
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,13 +36,18 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_file=".env",
+        env_ignore_empty=True,
         extra="ignore",
         case_sensitive=False,
     )
 
     @property
     def origins(self) -> list[str]:
-        return [x.strip() for x in self.allowed_origins.split(",") if x.strip()]
+        return [
+            x.strip()
+            for x in self.allowed_origins.split(",")
+            if x.strip()
+        ]
 
 
 @lru_cache(maxsize=1)
