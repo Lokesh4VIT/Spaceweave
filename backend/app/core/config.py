@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     port: int = 8000
     allowed_origins: str = "http://localhost:8000,http://127.0.0.1:8000"
     qdrant_url: str = "http://qdrant:6333"
-    qdrant_collection: str = "spaceweave_products"
+    qdrant_api_key: str | None = None
     embedding_model: str = "sentence-transformers/clip-ViT-B-32"
     embedding_dim: int = 512
     candidate_k: int = 120
