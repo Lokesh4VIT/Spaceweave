@@ -8,6 +8,7 @@ from PIL import Image, UnidentifiedImageError
 from app.core.config import get_settings
 from app.providers.amazon import search_amazon
 from app.providers.flipkart import search_flipkart
+from app.services.embedding import model as embedding_model
 from app.services.external_ranker import rank_external
 from app.services.search import run_search
 from app.services.vector_store import client, ensure_collection
@@ -24,17 +25,44 @@ async def health():
 @router.get("/ready")
 async def ready():
     settings = get_settings()
+
+    qdrant_error: str | None = None
+    points = 0
     try:
         points = ensure_collection()
-        return {
-            "status": "ready" if points > 0 else "not_ready",
-            "qdrant": "connected",
+    except Exception as exc:
+        logger.exception("Readiness check: Qdrant unavailable")
+        qdrant_error = str(exc)
+
+    # Loading the embedding model is the other hard dependency of /search —
+    # check it here too so /ready can actually distinguish "Qdrant is the
+    # problem" from "the CLIP model can't load", instead of both surfacing
+    # as the same generic 503 from the search endpoint. This reuses the same
+    # cached singleton search uses, so a warm instance reports instantly and
+    # only a genuinely cold instance pays the load cost here.
+    model_error: str | None = None
+    try:
+        await run_in_threadpool(embedding_model)
+    except Exception as exc:
+        logger.exception("Readiness check: embedding model failed to load")
+        model_error = str(exc)
+
+    overall_ready = qdrant_error is None and model_error is None and points > 0
+
+    return {
+        "status": "ready" if overall_ready else "not_ready",
+        "qdrant": {
+            "connected": qdrant_error is None,
             "collection": settings.qdrant_collection,
             "points": points,
-        }
-    except Exception as exc:
-        logger.exception("Readiness check failed")
-        raise HTTPException(status_code=503, detail="Vector store is unavailable") from exc
+            "error": qdrant_error,
+        },
+        "embedding_model": {
+            "loaded": model_error is None,
+            "name": settings.embedding_model,
+            "error": model_error,
+        },
+    }
 
 
 @router.post("/search")

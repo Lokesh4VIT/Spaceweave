@@ -18,6 +18,22 @@ COPY backend/app /app/backend/app
 COPY data /app/data
 COPY frontend /app/frontend
 
+# --- Vercel Functions run with a read-only filesystem; only /tmp is writable
+# at runtime (up to 500MB), and it's wiped between cold starts. ---
+# sentence-transformers/huggingface_hub default to caching downloaded model
+# weights under $HOME/.cache, which does not exist at runtime on Vercel — the
+# first real request would hit an uncaught write error there, which is what
+# `services/search.py` was surfacing as "Search service is temporarily
+# unavailable." Redirecting every cache directory these libraries use to
+# /tmp fixes that: downloads still happen (and still cost time on a cold
+# start), but they succeed instead of throwing.
+ENV HF_HOME=/tmp/hf_cache \
+    HF_HUB_CACHE=/tmp/hf_cache/hub \
+    SENTENCE_TRANSFORMERS_HOME=/tmp/hf_cache \
+    TRANSFORMERS_CACHE=/tmp/hf_cache \
+    TORCH_HOME=/tmp/torch_cache \
+    XDG_CACHE_HOME=/tmp/xdg_cache
+
 EXPOSE 80
 
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-80}"]

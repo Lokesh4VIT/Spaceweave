@@ -2,6 +2,78 @@
 
 **AI-powered visual product retrieval + spatial fit ranking for furniture and home products.**
 
+## Fix applied: "Search service is temporarily unavailable"
+
+**Root cause, confirmed by reproduction:** Vercel Functions (including
+`Dockerfile.vercel` container functions) run with a **read-only filesystem**;
+only `/tmp` is writable, and it's wiped between cold starts. `sentence-transformers`
+and `huggingface_hub` default to caching downloaded model weights under
+`$HOME/.cache`, which doesn't exist and can't be created at runtime on Vercel.
+The first real request that loaded the CLIP model
+(`app/services/embedding.py::model()`) hit `OSError: [Errno 30] Read-only
+file system` while trying to create that cache directory — caught by the
+`except Exception` in `app/api/routes.py` and turned into the generic
+`"Search service is temporarily unavailable."` 503.
+
+This was reproduced directly (a real bind-mounted read-only filesystem,
+not a guess) and confirmed fixed the same way — see below.
+
+**Fix:** `Dockerfile.vercel` now sets `HF_HOME`, `HF_HUB_CACHE`,
+`SENTENCE_TRANSFORMERS_HOME`, `TRANSFORMERS_CACHE`, `TORCH_HOME`, and
+`XDG_CACHE_HOME` to paths under `/tmp` — the one location Vercel Functions
+can actually write to. The model still has to download on a cold start
+(that's inherent to running a ML model behind a scale-to-zero function; see
+Limitations), but the download now succeeds instead of throwing.
+
+**Also added:**
+- `vercel.json` with `maxDuration: 60` on the container function, so a slow
+  cold-start model download has time to finish instead of being killed
+  mid-request (Hobby plan's function timeout cap is 60s; raise it if you're
+  on Pro).
+- `/api/v1/ready` now checks the embedding model load **separately** from
+  Qdrant connectivity and reports which one (if either) is broken, instead
+  of collapsing every failure into one generic message — hit it after
+  deploying to confirm both dependencies are healthy before testing search:
+  ```text
+  GET https://YOUR-VERCEL-DOMAIN/api/v1/ready
+  ```
+  A healthy response looks like:
+  ```json
+  {
+    "status": "ready",
+    "qdrant": {"connected": true, "points": 500, "error": null},
+    "embedding_model": {"loaded": true, "error": null}
+  }
+  ```
+  If `embedding_model.error` is non-null after this fix, that's the exact
+  underlying exception — paste it into Vercel's function logs search or
+  share it verbatim; don't guess from the generic search-endpoint message.
+
+**Note on cold starts:** `/tmp` on Vercel Functions is capped at 500MB and
+is wiped between cold starts (the function scales to zero after 5 minutes
+idle), so every cold start still re-downloads the ~500MB CLIP checkpoint
+before it can serve a request — this fix makes that download *succeed*
+instead of crash, but a cold request will still be noticeably slower than
+a warm one. If cold-start latency becomes a problem, the next optimization
+is baking the model weights into the Docker image at build time (so no
+runtime download is needed at all) instead of downloading them at runtime —
+not done here because it risks pushing a single image layer close to Vercel
+Container Registry's 500MB-per-layer limit and needs to be tested against
+an actual build, not assumed.
+
+**If it's still failing after deploying this fix**, check, in order:
+1. `GET /api/v1/ready` — tells you directly which dependency is broken.
+2. Vercel dashboard → your project → **Functions → Logs** (or `vercel logs
+   <deployment-url>`) for the real traceback — `routes.py` logs the full
+   exception server-side via `logger.exception(...)` even though the
+   response to the browser stays generic.
+3. That `QDRANT_URL` / `QDRANT_API_KEY` in Vercel's environment variables
+   point at your actual Qdrant Cloud cluster, not the `docker-compose`
+   default (`http://qdrant:6333`, which only resolves inside
+   `docker compose`).
+4. That `scripts/seed_qdrant.py` has actually been run against that same
+   cluster (`points` in `/ready` should be > 0).
+
 ## Production deployment target
 
 SpaceWeave is configured for **Vercel + Qdrant Cloud**.
